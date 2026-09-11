@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "joachim.lockstep",
+  "name": "Lockstep",
+  "version": "0.1.0",
+  "author": "joachim",
+  "license": "MIT",
+  "description": "Every monitor marches in step: SUPER+3 switches all screens to workspace 3, the bar shows shared workspace groups, and a small menu pauses or resumes it.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Lockstep",
+    "description": "Shared workspace groups across all monitors, with a status menu",
+    "category": "Compositor",
+    "aliases": [
+      "workspaces",
+      "shared-workspaces"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "defaults": {
+      "groups": 10,
+      "stride": 10,
+      "minShown": 5
+    },
+    "schema": [
+      {
+        "key": "groups",
+        "type": "integer",
+        "label": "Workspaces per monitor",
+        "min": 1,
+        "max": 10,
+        "step": 1,
+        "defaultValue": 10
+      },
+      {
+        "key": "stride",
+        "type": "integer",
+        "label": "Id spacing between monitors (match the Lua config)",
+        "min": 1,
+        "max": 100,
+        "step": 1,
+        "defaultValue": 10
+      },
+      {
+        "key": "minShown",
+        "type": "integer",
+        "label": "Always show at least this many",
+        "min": 1,
+        "max": 10,
+        "step": 1,
+        "defaultValue": 5
+      }
+    ]
+  }
+}
