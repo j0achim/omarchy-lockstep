@@ -97,6 +97,7 @@ lockstep = {
   groups = 10,      -- groups per monitor (only 1-10 get number keys)
   stride = 10,      -- id spacing between monitors; >= groups
   bind_keys = true, -- replace Omarchy's workspace bindings
+  gather_on_undock = true, -- pull a lost monitor's windows onto the rest, send them back later
 }
 ```
 
@@ -109,19 +110,21 @@ show at least this many groups).
 ```bash
 hyprctl repl 'return lockstep.status()'   # which id each monitor shows
 hyprctl repl 'lockstep.focus(4)'           # switch every monitor to group 4
-hyprctl repl 'lockstep.gather()'           # after undocking: pull windows from
-                                                    # vanished monitors' ids into the
-                                                    # same group on the last monitor
+hyprctl repl 'lockstep.gather()'           # pull windows from vanished monitors'
+                                                    # ids into the same group now
 ```
 
 ## Monitor changes
 
 When a monitor appears or disappears the rules are rebuilt from the new
 left-to-right order and every workspace is moved to the monitor its id belongs
-to. Ids that belong to a monitor that is gone (for example 21–30 after
-undocking a third screen) stay parked, hidden, on the remaining monitor and
-come back when the monitor does. Run `lockstep.gather()` if you would
-rather have those windows in the visible groups now.
+to. Windows on ids whose monitor is gone (for example 11–20 after undocking)
+are gathered into the same group on the last remaining monitor, so group 3 on
+the laptop holds everything that was in group 3. Each gathered window's origin
+is remembered in `~/.local/state/omarchy/lockstep/parked`; when a monitor is
+back at that position, windows that were not moved in the meantime return to
+it. Set `gather_on_undock = false` to leave orphaned ids parked and hidden
+instead, and gather by hand with `lockstep.gather()`.
 
 ## Limitations
 
