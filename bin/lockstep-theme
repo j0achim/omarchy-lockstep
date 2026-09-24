@@ -1,0 +1,145 @@
+#!/bin/bash
+
+# Lockstep: per-group Omarchy themes, made to feel instant.
+#
+# A full `omarchy theme set` spends ~0.4 s (mostly rendering templates) before
+# the bar and wallpaper change, then retints terminals, Hyprland, the browser
+# and friends. So a group switch runs two steps:
+#
+#   fast   paint the bar and wallpaper right away over omarchy-shell IPC, from
+#          colors.toml / shell.toml / background cached for that theme
+#   apply  run the real `omarchy theme set` for everything else (serialized,
+#          latest switch wins; skips the background when fast already showed it)
+#
+#   cache <theme>   store the current theme's files in the cache (theme-set hook)
+#   cache-current   same, for the active theme, only when not cached yet
+#   hook <theme>    entry point for ~/.config/omarchy/hooks/theme-set.d/
+#
+# The cache is refreshed on every full theme set, so an omarchy update that
+# changes the templates costs at most one slightly-off fast paint.
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+CURRENT="$STATE/current"
+LS_STATE="$STATE/lockstep"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/lockstep/themes"
+LOCK="${XDG_RUNTIME_DIR:-/tmp}/lockstep-theme.lock"
+TRANSITIONS="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/background-transitions"
+OMARCHY_THEMES="${OMARCHY_PATH:-/usr/share/omarchy}/themes"
+USER_THEMES="$HOME/.config/omarchy/themes"
+USER_BACKGROUNDS="$HOME/.config/omarchy/backgrounds"
+
+valid() { [[ $1 =~ ^[a-z0-9._-]+$ ]]; }
+wanted() { head -n1 "$LS_STATE/theme-wanted" 2>/dev/null; }
+current() { head -n1 "$CURRENT/theme.name" 2>/dev/null; }
+
+# A theme's background by basename, from a location theme-set never deletes.
+source_background() {
+  local theme="$1" name="$2" dir
+  [[ -n $name ]] || return 1
+  for dir in "$USER_BACKGROUNDS/$theme" "$USER_THEMES/$theme/backgrounds" "$OMARCHY_THEMES/$theme/backgrounds"; do
+    [[ -f $dir/$name ]] && { echo "$dir/$name"; return 0; }
+  done
+  return 1
+}
+
+cache_theme() {
+  local theme="$1" keep_background="$2" bg
+  valid "$theme" && [[ $theme == "$(current)" && -f $CURRENT/theme/colors.toml ]] || return 0
+  mkdir -p "$CACHE/$theme"
+  cp "$CURRENT/theme/colors.toml" "$CACHE/$theme/colors.toml"
+  if [[ -f $CURRENT/theme/shell.toml ]]; then
+    cp "$CURRENT/theme/shell.toml" "$CACHE/$theme/shell.toml"
+  else
+    rm -f "$CACHE/$theme/shell.toml"
+  fi
+  # Remember which wallpaper theme-set picked, so the fast path shows the same.
+  if [[ -z $keep_background ]]; then
+    bg=$(readlink -f "$CURRENT/background" 2>/dev/null)
+    [[ -n $bg ]] && echo "${bg##*/}" >"$CACHE/$theme/background"
+  fi
+}
+
+# theme-shown holds "<theme> <background>" for what the bar and wallpaper show.
+shown() { head -n1 "$LS_STATE/theme-shown" 2>/dev/null; }
+
+fast() {
+  local force="$1" theme bg from snap colors shell
+  theme=$(wanted)
+  valid "$theme" && [[ -f $CACHE/$theme/colors.toml ]] || return 1
+  [[ -z $force && $(shown) == "$theme "* ]] && return 0
+  bg=$(source_background "$theme" "$(head -n1 "$CACHE/$theme/background" 2>/dev/null)") || return 1
+
+  # The image we fade from lives in current/theme, which the full run deletes
+  # mid-fade; hardlink it aside like omarchy-theme-set does.
+  from=$(readlink -f "$CURRENT/background" 2>/dev/null)
+  snap=""
+  if [[ -f $from ]]; then
+    mkdir -p "$TRANSITIONS"
+    snap="$TRANSITIONS/lockstep-$$.${from##*.}"
+    ln "$from" "$snap" 2>/dev/null || cp "$from" "$snap"
+  fi
+
+  colors=$(base64 -w0 "$CACHE/$theme/colors.toml")
+  shell=$([[ -f $CACHE/$theme/shell.toml ]] && base64 -w0 "$CACHE/$theme/shell.toml")
+  if timeout 2 omarchy-shell background themeTransition "$snap" "$bg" "$bg" "$colors" "$shell" >/dev/null 2>&1; then
+    echo "$theme $bg" >"$LS_STATE/theme-shown"
+  else
+    rm -f "$LS_STATE/theme-shown"
+  fi
+  [[ -n $snap ]] && (sleep 3; rm -f "$snap") >/dev/null 2>&1 &
+  return 0
+}
+
+apply() {
+  local theme shown_theme shown_bg name
+  exec 9>"$LOCK"
+  flock 9
+
+  theme=$(wanted)
+  valid "$theme" || return 0
+  [[ $theme == "$(current)" ]] && return 0
+
+  read -r shown_theme shown_bg < <(shown)
+  if [[ $shown_theme == "$theme" && -f $shown_bg ]]; then
+    # Wallpaper and bar are already there: skip theme-set's background step.
+    LOCKSTEP_THEME=1 OMARCHY_THEME_SKIP_BACKGROUND=1 omarchy theme set "$theme" >/dev/null 2>&1
+    name=${shown_bg##*/}
+    if [[ -f $CURRENT/theme/backgrounds/$name ]]; then
+      ln -nsf "$CURRENT/theme/backgrounds/$name" "$CURRENT/background"
+    else
+      ln -nsf "$shown_bg" "$CURRENT/background"
+    fi
+  else
+    LOCKSTEP_THEME=1 omarchy theme set "$theme" >/dev/null 2>&1
+    cache_theme "$theme"
+    echo "$theme $(readlink -f "$CURRENT/background")" >"$LS_STATE/theme-shown"
+  fi
+
+  # Switched on while this ran: theme-set just repainted the bar in the old
+  # theme, so repaint the new one now instead of after the next full run.
+  [[ $(wanted) != "$theme" ]] && fast force
+  return 0
+}
+
+case "$1" in
+  fast) fast ;;
+  apply) apply ;;
+  cache) cache_theme "$2" ;;
+  cache-current)
+    t=$(current)
+    [[ -f $CACHE/$t/colors.toml ]] || cache_theme "$t"
+    ;;
+  hook)
+    # Our own runs: colors/shell are fresh, but the background link is set by
+    # apply() after theme-set returns, so leave the cached name alone.
+    cache_theme "$2" "${LOCKSTEP_THEME:+keep}"
+    [[ -n $LOCKSTEP_THEME ]] && exit 0
+    valid "$2" || exit 0
+    echo "$2 $(readlink -f "$CURRENT/background")" >"$LS_STATE/theme-shown"
+    hyprctl eval "if lockstep then lockstep.theme_picked('$2') end" >/dev/null
+    ;;
+  *)
+    echo "Usage: lockstep-theme fast|apply|cache <theme>|cache-current|hook <theme>" >&2
+    exit 1
+    ;;
+esac

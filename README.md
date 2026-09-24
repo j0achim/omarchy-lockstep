@@ -71,6 +71,12 @@ you do not see both.
 On first load, workspaces that already sit on a monitor get renumbered in
 place (workspace 6 on the third monitor becomes 26), so nothing moves.
 
+Optional, for a theme per workspace group (see below):
+
+```bash
+omarchy hook install theme-set ~/.config/omarchy/plugins/joachim.lockstep/hooks/lockstep-theme
+```
+
 ## Keys
 
 The plugin unbinds Omarchy's per-monitor workspace keys and rebinds them:
@@ -98,6 +104,7 @@ lockstep = {
   stride = 10,      -- id spacing between monitors; >= groups
   bind_keys = true, -- replace Omarchy's workspace bindings
   gather_on_undock = true, -- pull a lost monitor's windows onto the rest, send them back later
+  theme_delay = 200,        -- ms before the full theme set (bar + wallpaper change at once)
 }
 ```
 
@@ -112,6 +119,7 @@ hyprctl repl 'return lockstep.status()'   # which id each monitor shows
 hyprctl repl 'lockstep.focus(4)'           # switch every monitor to group 4
 hyprctl repl 'lockstep.gather()'           # pull windows from vanished monitors'
                                                     # ids into the same group now
+hyprctl repl 'lockstep.set_theme(2, "Nord")' # theme for group 2 (see Themes)
 ```
 
 ## Monitor changes
@@ -126,7 +134,37 @@ back at that position, windows that were not moved in the meantime return to
 it. Set `gather_on_undock = false` to leave orphaned ids parked and hidden
 instead, and gather by hand with `lockstep.gather()`.
 
+## Themes per group
+
+Each group can have its own Omarchy theme. Go to a group and pick a theme in
+Omarchy's theme switcher as usual: with the `theme-set` hook installed, that
+theme now belongs to the group, and switching groups switches the theme. Groups
+without one use the default, which is the theme you had when this was first
+loaded.
+
+```bash
+hyprctl repl 'lockstep.set_theme(3, "Gruvbox")'    # assign without switching there
+hyprctl repl 'lockstep.set_theme(3, nil)'          # group 3 back to the default
+hyprctl repl 'lockstep.set_theme("default", "Nord")'
+cat ~/.local/state/omarchy/lockstep/themes         # the map
+```
+
+Switching feels instant: the bar and wallpaper change about 90 ms after the
+key press, over omarchy-shell IPC, from the theme's `colors.toml`,
+`shell.toml` and wallpaper cached in `~/.cache/omarchy/lockstep/themes/`.
+The full `omarchy theme set` (terminals, Hyprland borders, browser, editors)
+follows `theme_delay` ms (200) later and is done after roughly 0.8 s.
+`bin/lockstep-theme` serializes those runs and always applies the *latest*
+switch, so flicking through groups stays cheap. A theme is cached the first
+time it is applied in full, so the very first visit to a new theme takes the
+slow path once.
+While Lockstep is paused, themes neither switch nor get recorded.
+
 ## Limitations
+
+- Per-group themes are global, like Omarchy themes: every monitor shows the
+  group's theme. Entering a theme picks its first background, so a different
+  background chosen with `omarchy theme bg next` does not stick to the group.
 
 - Numbered workspaces only. Named and special workspaces are ignored.
 - `SUPER + SHIFT + arrows` are Hyprland's *move* dispatcher here instead of

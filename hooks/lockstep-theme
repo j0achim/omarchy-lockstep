@@ -1,0 +1,9 @@
+#!/bin/bash
+
+# Lockstep: remember a theme picked in Omarchy's switcher for the current
+# workspace group, and cache its colors for instant switching. Install with:
+#   omarchy hook install theme-set ~/.config/omarchy/plugins/joachim.lockstep/hooks/lockstep-theme
+#
+# omarchy hook install copies this file, so it only forwards to the plugin.
+
+exec "$HOME/.config/omarchy/plugins/joachim.lockstep/bin/lockstep-theme" hook "$@"

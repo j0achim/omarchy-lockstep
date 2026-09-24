@@ -221,6 +221,8 @@ function M.sync(group)
     if M.last_group ~= group then
       M.previous_group = M.last_group
       M.last_group = group
+      M.save_groups()
+      M.apply_theme(group)
     end
   end)
 
@@ -360,6 +362,150 @@ function M.gather(skip_sync)
   if not skip_sync then M.sync() end
 end
 
+-- ---------------------------------------------------------------------------
+-- Themes per group
+--
+-- Every group can carry its own Omarchy theme; groups without one use the
+-- "default" entry (seeded with the theme active when this was first loaded).
+-- A theme picked in Omarchy's switcher is recorded for the current group by
+-- the theme-set hook in hooks/lockstep-theme, which calls theme_picked().
+--
+-- A switch paints bar + wallpaper at once (`lockstep-theme fast`, ~90 ms).
+-- The full `omarchy theme set` takes ~0.6 s more and ends in `hyprctl
+-- reload`, which wipes this Lua state. So: it is launched detached after a
+-- short debounce (the latest switch wins), a switch whose timer a reload killed is re-armed from
+-- the "theme-pending" file on load, the current/previous group live in a
+-- state file, and themes are applied only when the group *changes* -- never
+-- on load, which would revert a theme just picked in the switcher before its
+-- hook has run. Paused: no switching and no recording.
+
+M.themes_file = state_dir .. "/themes"
+M.theme_pending_file = state_dir .. "/theme-pending"
+M.groups_file = state_dir .. "/groups"
+M.theme_delay = M.theme_delay or 200 -- ms before the full theme set; bar + wallpaper change at once
+local current_theme_file = (os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/state")) .. "/omarchy/current/theme.name"
+
+local function read_first_line(path)
+  local f = io.open(path, "r")
+  if not f then return nil end
+  local line = f:read("*l")
+  f:close()
+  return line
+end
+
+-- Same normalization as omarchy-theme-set; nil for anything unsafe to pass on.
+local function normalize_theme(name)
+  if type(name) ~= "string" then return nil end
+  name = name:gsub("<[^>]+>", ""):lower():gsub(" ", "-")
+  if name == "" or name:sub(1, 1) == "." or not name:match("^[a-z0-9._-]+$") then return nil end
+  return name
+end
+
+local function read_themes()
+  local themes = {}
+  local f = io.open(M.themes_file, "r")
+  if not f then return nil end
+  for line in f:lines() do
+    local key, name = line:match("^(%S+)%s+(%S+)")
+    name = normalize_theme(name)
+    if key and name then themes[tonumber(key) or key] = name end
+  end
+  f:close()
+  return themes
+end
+
+local function write_themes(themes)
+  os.execute("mkdir -p '" .. state_dir .. "'")
+  local f = io.open(M.themes_file, "w")
+  if not f then return end
+  if themes.default then f:write("default " .. themes.default .. "\n") end
+  for g = 1, M.groups do
+    if themes[g] then f:write(g .. " " .. themes[g] .. "\n") end
+  end
+  f:close()
+end
+
+function M.current_theme()
+  return normalize_theme(read_first_line(current_theme_file))
+end
+
+function M.themes()
+  local themes = read_themes()
+  if not themes then
+    themes = { default = M.current_theme() }
+    write_themes(themes)
+  end
+  return themes
+end
+
+function M.theme_for(group)
+  local themes = M.themes()
+  return themes[group] or themes.default
+end
+
+-- lockstep.set_theme(3, "Gruvbox"), set_theme("default", "Nord"),
+-- set_theme(3, nil) to fall back to the default again.
+function M.set_theme(group, name)
+  local themes = M.themes()
+  local key = tonumber(group) or (group == "default" and "default") or nil
+  if not key then return nil end
+  themes[key] = normalize_theme(name)
+  write_themes(themes)
+  return themes[key]
+end
+
+function M.theme_picked(name)
+  if not M.enabled then return end
+  local picked = M.set_theme(M.current_group(), name)
+  -- A still-queued `lockstep-theme apply` must not revert the pick.
+  local f = picked and io.open(M.theme_wanted_file, "w")
+  if f then f:write(picked .. "\n") f:close() end
+  return picked
+end
+
+function M.save_groups()
+  os.execute("mkdir -p '" .. state_dir .. "'")
+  local f = io.open(M.groups_file, "w")
+  if not f then return end
+  f:write(tostring(M.last_group or 0) .. " " .. tostring(M.previous_group or 0) .. "\n")
+  f:close()
+end
+
+local function load_groups()
+  local last, previous = (read_first_line(M.groups_file) or ""):match("^(%d+)%s+(%d+)")
+  last, previous = tonumber(last), tonumber(previous)
+  if last and last > 0 then M.last_group = last end
+  if previous and previous > 0 then M.previous_group = previous end
+end
+
+-- bin/lockstep-theme does the comparing: `fast` paints bar and wallpaper at
+-- once from a per-theme cache, `apply` runs the full theme set under its own
+-- lock (comparing here would race a theme set that has not written
+-- theme.name yet).
+local plugin_dir = debug.getinfo(1, "S").source:match("^@(.*)/hypr/[^/]+$")
+  or (os.getenv("HOME") .. "/.config/omarchy/plugins/joachim.lockstep")
+M.theme_cmd = plugin_dir .. "/bin/lockstep-theme"
+M.theme_wanted_file = state_dir .. "/theme-wanted"
+
+local function launch_theme()
+  M.theme_timer = nil
+  os.remove(M.theme_pending_file)
+  hl.exec_cmd(M.theme_cmd .. " apply")
+end
+
+function M.apply_theme(group)
+  if not M.enabled then return end
+  local want = M.theme_for(group)
+  if not want then return end
+  if M.theme_timer then pcall(function() M.theme_timer:set_enabled(false) end) end
+  local f = io.open(M.theme_wanted_file, "w")
+  if f then f:write(want .. "\n") f:close() end
+  f = io.open(M.theme_pending_file, "w")
+  if f then f:write(want .. "\n") f:close() end
+  hl.exec_cmd(M.theme_cmd .. " fast")
+  M.theme_timer = hl.timer(launch_theme, { timeout = M.theme_delay, type = "oneshot" })
+end
+
 -- Idempotent: undock can fire removed + layout_changed, and a flapping dock
 -- fires them over and over; each run converges on the same state.
 function M.relayout()
@@ -456,8 +602,13 @@ end
 hl.on("hyprland.start", function() pcall(M.relayout) end)
 pcall(function()
   write_state(M.enabled)
+  load_groups()
+  M.themes()
+  hl.exec_cmd(M.theme_cmd .. " cache-current") -- so the default theme is fast from the start
   M.adopt()
   M.relayout()
+  -- A group switch whose theme timer died in a reload: finish it.
+  if read_first_line(M.theme_pending_file) then M.apply_theme(M.current_group()) end
 end)
 
 return M
